@@ -29,6 +29,9 @@ from util import csvutil
 from util.dateutil import convert_to_days_ago
 from util.notify import push_deer
 
+import argparse
+import schedule
+
 warnings.filterwarnings("ignore")
 
 # 如果日志文件夹不存在，则创建
@@ -41,7 +44,7 @@ logger = logging.getLogger("weibo")
 # 日期时间格式
 DTFORMAT = "%Y-%m-%dT%H:%M:%S"
 
-class Weibo(object):
+class WeiboOneLoop(object):
     def __init__(self, config):
         """Weibo类初始化"""
         self.validate_config(config)
@@ -1930,41 +1933,57 @@ class Weibo(object):
             # 用户id不可用
             if self.get_user_info() != 0:
                 return
-            logger.info("准备搜集 {} 的微博".format(self.user["screen_name"]))
-            if const.MODE == "append" and (
-                "first_crawler" not in self.__dict__ or self.first_crawler is False
-            ):
-                # 本次运行的某用户首次抓取，用于标记最新的微博id
-                self.first_crawler = True
-                const.CHECK_COOKIE["GUESS_PIN"] = True
-            since_date = datetime.strptime(self.user_config["since_date"], DTFORMAT)
-            today = datetime.today()
-            if since_date <= today:    # since_date 若为未来则无需执行
-                page_count = self.get_page_count()
-                wrote_count = 0
-                page1 = 0
-                random_pages = random.randint(1, 5)
-                self.start_date = datetime.now().strftime(DTFORMAT)
-                pages = range(self.start_page, page_count + 1)
-                for page in tqdm(pages, desc="Progress"):
-                    is_end = self.get_one_page(page)
-                    if is_end:
-                        break
 
-                    if page % 20 == 0:  # 每爬20页写入一次文件
-                        self.write_data(wrote_count)
-                        wrote_count = self.got_count
+            while True:
+                logger.info("准备搜集 {} 的微博".format(self.user["screen_name"]))
+                if const.MODE == "append" and (
+                    "first_crawler" not in self.__dict__ or self.first_crawler is False
+                ):
+                    # 本次运行的某用户首次抓取，用于标记最新的微博id
+                    self.first_crawler = True
+                    const.CHECK_COOKIE["GUESS_PIN"] = True
+                since_date = datetime.strptime(self.user_config["since_date"], DTFORMAT)
+                today = datetime.today()
+                if since_date <= today:    # since_date 若为未来则无需执行
+                    page_count = self.get_page_count()
+                    wrote_count = 0
+                    page1 = 0
+                    random_pages = random.randint(1, 5)
+                    self.start_date = datetime.now().strftime(DTFORMAT)
+                    pages = range(self.start_page, page_count + 1)
+                    for page in tqdm(pages, desc="Progress"):
+                        is_end = self.get_one_page(page)
+                        if is_end:
+                            break
 
-                    # 通过加入随机等待避免被限制。爬虫速度过快容易被系统限制(一段时间后限
-                    # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
-                    # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
-                    if (page - page1) % random_pages == 0 and page < page_count:
-                        sleep(random.randint(6, 10))
-                        page1 = page
-                        random_pages = random.randint(1, 5)
+                        if page % 20 == 0:  # 每爬20页写入一次文件
+                            self.write_data(wrote_count)
+                            wrote_count = self.got_count
 
-                self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
-            logger.info("微博爬取完成，共爬取%d条微博", self.got_count)
+                        # 通过加入随机等待避免被限制。爬虫速度过快容易被系统限制(一段时间后限
+                        # 制会自动解除)，加入随机等待模拟人的操作，可降低被系统限制的风险。默
+                        # 认是每爬取1到5页随机等待6到10秒，如果仍然被限，可适当增加sleep时间
+                        if (page - page1) % random_pages == 0 and page < page_count:
+                            sleep(random.randint(6, 10))
+                            page1 = page
+                            random_pages = random.randint(1, 5)
+
+                    self.write_data(wrote_count)  # 将剩余不足20页的微博写入文件
+                logger.info("微博爬取完成，共爬取%d条微博", self.got_count)
+
+                self.weibo = []
+                self.got_count = 0
+                self.weibo_id_list = []
+                self.user_config["since_date"] = self.start_date
+
+                if self.user_config_file_path and self.user:
+                    self.update_user_config_file(self.user_config_file_path)
+
+                sleep_time = random.randint(120, 240)
+                logger.info(f"""短暂sleep {sleep_time}秒，避免被ban""")        
+                sleep(sleep_time)
+                logger.info("sleep结束")
+
         except Exception as e:
             logger.exception(e)
 
@@ -2066,7 +2085,7 @@ def get_config():
 def main():
     try:
         config = get_config()
-        wb = Weibo(config)
+        wb = WeiboOneLoop(config)
         wb.start()  # 爬取微博信息
         if const.NOTIFY["NOTIFY"]:
             push_deer("更新了一次微博")
